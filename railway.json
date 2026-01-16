@@ -3,6 +3,6 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "cd Tg_numbers_bot && python bot.py"
+    "startCommand": "python bot.py.txt"
   }
 }
