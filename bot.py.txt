@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # ==================== КОНФИГУРАЦИЯ ====================
 BOT_TOKEN = "8156674134:AAH2t8wCtxo95-_t3HQUFaOMBBHVPMWdQaU"  # Ваш токен бота
 ADMIN_ID = 951154134  # ID администратора (друга)
+AUTHOR_ID = 951154134  # ID автора (может быть тот же, что и админ)
 
 # Контакты
 SUPPORT_USERNAME = "@svetonaya"
@@ -27,8 +28,13 @@ CHANNEL_LINK = "https://t.me/shopsfiznumber"
 CREATOR_LINK = "@UGLYLELOOSH"
 
 # Реквизиты карты (ЗАМЕНИТЕ НА СВОИ!)
-CARD_NUMBER = "2202 2080 2594 5990"  # Номер карты
+CARD_NUMBER = "2200 1234 5678 9012"  # Номер карты
 CARD_HOLDER = "ИВАН ИВАНОВ"           # Имя держателя
+
+# Файлы для данных
+DATA_FILE = "numbers.json"
+REVIEWS_FILE = "reviews.json"
+PENDING_ORDERS_FILE = "pending_orders.json"
 
 # Проверка токена
 if not BOT_TOKEN:
@@ -40,15 +46,13 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# Файлы для данных
-DATA_FILE = "numbers.json"
-
 # ==================== СОСТОЯНИЯ FSM ====================
 class AdminStates(StatesGroup):
     adding_country = State()
     adding_number = State()
     adding_multiple_numbers = State()
     editing_price = State()
+    waiting_review = State()
 
 # ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С ДАННЫМИ ====================
 def load_numbers():
@@ -64,6 +68,36 @@ def load_numbers():
 def save_numbers(data):
     """Сохраняет номера в файл"""
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+def load_reviews():
+    """Загружает отзывы из файла"""
+    if os.path.exists(REVIEWS_FILE):
+        try:
+            with open(REVIEWS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {"reviews": []}
+    return {"reviews": []}
+
+def save_reviews(data):
+    """Сохраняет отзывы в файл"""
+    with open(REVIEWS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+def load_pending_orders():
+    """Загружает ожидающие заказы"""
+    if os.path.exists(PENDING_ORDERS_FILE):
+        try:
+            with open(PENDING_ORDERS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_pending_orders(data):
+    """Сохраняет ожидающие заказы"""
+    with open(PENDING_ORDERS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 def init_data():
@@ -91,16 +125,268 @@ def init_data():
         }
         save_numbers(initial_data)
         logger.info("✅ Создана новая база данных (пустая)")
-        return initial_data
+    
+    # Инициализируем файл отзывов если нет
+    if not os.path.exists(REVIEWS_FILE):
+        save_reviews({"reviews": []})
+    
+    # Инициализируем файл ожидающих заказов если нет
+    if not os.path.exists(PENDING_ORDERS_FILE):
+        save_pending_orders({})
+    
     return data
 
-# ==================== КОМАНДЫ БОТА ====================
+# ==================== ФУНКЦИЯ 1: Подтверждение выдачи товара ====================
+@dp.callback_query(lambda c: c.data.startswith("confirm_delivery_"))
+async def confirm_delivery(callback: types.CallbackQuery):
+    """Автор подтверждает выдачу товара"""
+    if callback.from_user.id != AUTHOR_ID:
+        await callback.answer("❌ Только автор может подтверждать выдачу")
+        return
+    
+    order_id = callback.data.split("_")[2]
+    pending_orders = load_pending_orders()
+    
+    if order_id not in pending_orders:
+        await callback.answer("❌ Заказ не найден")
+        return
+    
+    order_info = pending_orders[order_id]
+    country = order_info["country"]
+    number_id = order_info["number_id"]
+    
+    # Удаляем номер из базы
+    data = load_numbers()
+    
+    number_found = False
+    for i, num in enumerate(data[country]["numbers"]):
+        if num["id"] == number_id:
+            # УДАЛЯЕМ номер из базы
+            del data[country]["numbers"][i]
+            number_found = True
+            break
+    
+    if not number_found:
+        await callback.answer("❌ Номер не найден в базе")
+        return
+    
+    save_numbers(data)
+    
+    # Удаляем заказ из ожидающих
+    del pending_orders[order_id]
+    save_pending_orders(pending_orders)
+    
+    # Уведомляем покупателя
+    try:
+        buyer_id = order_info["user_id"]
+        await bot.send_message(
+            buyer_id,
+            f"✅ Автор подтвердил выдачу номера!\n\n"
+            f"🌍 Страна: {country}\n"
+            f"📞 Номер: {order_info['number']}\n"
+            f"💰 Цена: {order_info['price']}₽\n\n"
+            f"Спасибо за покупку! 🛍️"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка уведомления покупателя: {e}")
+    
+    await callback.message.edit_text(
+        f"✅ Выдача подтверждена!\n\n"
+        f"Номер удален из базы.\n"
+        f"Покупатель уведомлен."
+    )
+    
+    # Логируем
+    logger.info(f"Автор подтвердил выдачу заказа {order_id}")
+
+@dp.callback_query(lambda c: c.data.startswith("cancel_delivery_"))
+async def cancel_delivery(callback: types.CallbackQuery):
+    """Автор отменяет выдачу (отказ заказа)"""
+    if callback.from_user.id != AUTHOR_ID:
+        await callback.answer("❌ Только автор может отменять заказы")
+        return
+    
+    order_id = callback.data.split("_")[2]
+    pending_orders = load_pending_orders()
+    
+    if order_id in pending_orders:
+        del pending_orders[order_id]
+        save_pending_orders(pending_orders)
+    
+    await callback.message.edit_text(
+        "❌ Заказ отменен.\n"
+        "Номер остался в продаже."
+    )
+    
+    # Возвращаем в админ-панель
+    await admin_panel(callback)
+
+# ==================== ФУНКЦИЯ 2: Система отзывов ====================
+@dp.callback_query(lambda c: c.data == "reviews")
+async def show_reviews(callback: types.CallbackQuery):
+    """Показывает отзывы"""
+    reviews_data = load_reviews()
+    reviews = reviews_data.get("reviews", [])
+    
+    if not reviews:
+        await callback.message.answer("📭 Пока нет отзывов. Будьте первым!")
+        return
+    
+    # Показываем последние 5 отзывов
+    recent_reviews = reviews[-5:]
+    
+    text = "⭐ Отзывы наших клиентов:\n\n"
+    
+    for i, review in enumerate(recent_reviews, 1):
+        user_info = review.get("username", f"ID: {review.get('user_id', 'Неизвестно')}")
+        rating = "⭐" * min(5, int(review.get("rating", 5)))
+        date = datetime.fromisoformat(review.get("date", datetime.now().isoformat())).strftime("%d.%m.%Y")
+        
+        text += f"{i}. {user_info}\n"
+        text += f"   {rating}\n"
+        if review.get("comment"):
+            text += f"   💬 {review.get('comment')[:50]}"
+            if len(review.get("comment", "")) > 50:
+                text += "..."
+        text += f"\n   📅 {date}\n\n"
+    
+    keyboard = InlineKeyboardBuilder()
+    keyboard.add(InlineKeyboardButton(text="💬 Оставить отзыв", callback_data="leave_review"))
+    keyboard.add(InlineKeyboardButton(text="📢 Все отзывы в канале", url=CHANNEL_LINK))
+    keyboard.add(InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_main"))
+    keyboard.adjust(1)
+    
+    await callback.message.edit_text(text, reply_markup=keyboard.as_markup())
+
+@dp.callback_query(lambda c: c.data == "leave_review")
+async def leave_review_start(callback: types.CallbackQuery, state: FSMContext):
+    """Начало оставления отзыва"""
+    await state.set_state(AdminStates.waiting_review)
+    
+    keyboard = InlineKeyboardBuilder()
+    for i in range(1, 6):
+        keyboard.add(InlineKeyboardButton(text="⭐" * i, callback_data=f"rating_{i}"))
+    keyboard.add(InlineKeyboardButton(text="❌ Отмена", callback_data="reviews"))
+    keyboard.adjust(3, 2)
+    
+    await callback.message.edit_text(
+        "💬 Пожалуйста, оцените наш сервис:\n"
+        "Выберите количество звезд от 1 до 5:",
+        reply_markup=keyboard.as_markup()
+    )
+
+@dp.callback_query(lambda c: c.data.startswith("rating_"))
+async def set_rating(callback: types.CallbackQuery, state: FSMContext):
+    """Установка рейтинга"""
+    rating = int(callback.data.split("_")[1])
+    await state.update_data(rating=rating)
+    
+    await callback.message.edit_text(
+        f"⭐ Вы оценили на {rating}/5\n\n"
+        f"Теперь напишите комментарий (или нажмите 'Пропустить'):"
+    )
+    
+    # Меняем состояние на ожидание комментария
+    @dp.message(AdminStates.waiting_review)
+    async def process_review_comment(message: types.Message, state: FSMContext):
+        user_data = await state.get_data()
+        rating = user_data.get("rating", 5)
+        comment = message.text
+        
+        # Сохраняем отзыв
+        reviews_data = load_reviews()
+        review = {
+            "user_id": message.from_user.id,
+            "username": f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}",
+            "rating": rating,
+            "comment": comment,
+            "date": datetime.now().isoformat()
+        }
+        reviews_data["reviews"].append(review)
+        save_reviews(reviews_data)
+        
+        await message.answer(
+            f"✅ Спасибо за ваш отзыв!\n"
+            f"Рейтинг: {'⭐' * rating}\n"
+            f"Комментарий сохранен."
+        )
+        
+        # Уведомляем админа о новом отзыве
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"📣 НОВЫЙ ОТЗЫВ!\n\n"
+                f"👤 От: {review['username']}\n"
+                f"⭐ Рейтинг: {'⭐' * rating}\n"
+                f"💬 Комментарий: {comment[:100]}{'...' if len(comment) > 100 else ''}"
+            )
+        except:
+            pass
+        
+        await state.clear()
+
+# ==================== ФУНКЦИЯ 3: Улучшенные уведомления админу ====================
+async def notify_admin_about_selection(user_id: int, username: str, country: str, number_id: int, number: str, price: int):
+    """Отправляет админу уведомление о выборе номера"""
+    try:
+        user_info = f"@{username}" if username else f"ID: {user_id}"
+        
+        # Сохраняем информацию о заказе
+        order_id = f"{user_id}_{int(datetime.now().timestamp())}"
+        pending_orders = load_pending_orders()
+        
+        pending_orders[order_id] = {
+            "user_id": user_id,
+            "username": username,
+            "country": country,
+            "number_id": number_id,
+            "number": number,
+            "price": price,
+            "selected_at": datetime.now().isoformat()
+        }
+        save_pending_orders(pending_orders)
+        
+        # Создаем клавиатуру с кнопками
+        keyboard = InlineKeyboardBuilder()
+        keyboard.add(InlineKeyboardButton(
+            text="✅ Номер был выдан",
+            callback_data=f"confirm_delivery_{order_id}"
+        ))
+        keyboard.add(InlineKeyboardButton(
+            text="❌ Отказ заказа",
+            callback_data=f"cancel_delivery_{order_id}"
+        ))
+        keyboard.adjust(1)
+        
+        message_text = (
+            f"_ЮЗ_ осмотрел этот номер и думает купить его\n"
+            f"ждите сообщение в личке!\n\n"
+            f"👤 Покупатель: {user_info}\n"
+            f"🌍 Страна: {country}\n"
+            f"📞 Номер: {number}\n"
+            f"💰 Цена: {price}₽\n"
+            f"🆔 ID номера: {number_id}\n"
+            f"🕒 Время: {datetime.now().strftime('%H:%M:%S')}"
+        )
+        
+        await bot.send_message(
+            ADMIN_ID,
+            message_text,
+            parse_mode="Markdown",
+            reply_markup=keyboard.as_markup()
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка уведомления админа: {e}")
+
+# ==================== ОСНОВНЫЕ КОМАНДЫ БОТА ====================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     """Главное меню"""
     keyboard = InlineKeyboardBuilder()
     
     keyboard.add(InlineKeyboardButton(text="📱 Купить номер", callback_data="buy_number"))
+    keyboard.add(InlineKeyboardButton(text="⭐ Отзывы", callback_data="reviews"))
     keyboard.add(InlineKeyboardButton(text="ℹ️ Информация", callback_data="info"))
     keyboard.add(InlineKeyboardButton(text="🤝 Альянс", callback_data="alliance"))
     keyboard.add(InlineKeyboardButton(text="📞 Поддержка", url=f"https://t.me/{SUPPORT_USERNAME[1:]}"))
@@ -136,6 +422,7 @@ async def show_countries(callback: types.CallbackQuery):
                 callback_data=f"country_{country}"
             ))
     
+    keyboard.add(InlineKeyboardButton(text="⭐ Отзывы", callback_data="reviews"))
     keyboard.add(InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_main"))
     keyboard.adjust(1)
     
@@ -228,22 +515,15 @@ async def select_number(callback: types.CallbackQuery):
     ))
     keyboard.adjust(1)
     
-    # Уведомляем админа о выборе номера
-    try:
-        username = callback.from_user.username
-        user_info = f"@{username}" if username else f"ID: {callback.from_user.id}"
-        admin_msg = (
-            f"🛒 КЛИЕНТ ВЫБРАЛ НОМЕР!\n\n"
-            f"👤 Покупатель: {user_info}\n"
-            f"🌍 Страна: {country}\n"
-            f"📞 Номер ID: {number_id}\n"
-            f"📱 Номер: {number_info['number']}\n"
-            f"💰 Цена: {number_info['price']}₽\n\n"
-            f"⚠️ Ожидает оплаты на карту!"
-        )
-        await bot.send_message(ADMIN_ID, admin_msg)
-    except:
-        pass
+    # Уведомляем админа о выборе номера (ФУНКЦИЯ 3)
+    await notify_admin_about_selection(
+        user_id=callback.from_user.id,
+        username=callback.from_user.username,
+        country=country,
+        number_id=number_id,
+        number=number_info['number'],
+        price=number_info['price']
+    )
     
     await callback.message.edit_text(
         payment_text,
@@ -269,6 +549,9 @@ async def show_info(callback: types.CallbackQuery):
         f"• Переводом на карту {CARD_NUMBER}\n"
         f"• Проверка автором: {AUTHOR_USERNAME}\n"
         "• Выдача после подтверждения\n\n"
+        "⭐ Система отзывов:\n"
+        "• Оставляйте отзывы после покупки\n"
+        "• Помогайте другим покупателям\n\n"
         "📊 Отзывы:\n"
         f"• ТГ-канал: {CHANNEL_LINK}\n\n"
         "👨‍💻 Авторы:\n"
@@ -279,6 +562,10 @@ async def show_info(callback: types.CallbackQuery):
     keyboard.add(InlineKeyboardButton(
         text="📢 Канал с отзывами", 
         url=CHANNEL_LINK
+    ))
+    keyboard.add(InlineKeyboardButton(
+        text="⭐ Оставить отзыв", 
+        callback_data="leave_review"
     ))
     keyboard.add(InlineKeyboardButton(
         text="↩️ Назад", 
@@ -315,7 +602,7 @@ async def show_alliance(callback: types.CallbackQuery):
         reply_markup=keyboard.as_markup()
     )
 
-# Админ-панель
+# ==================== АДМИН-ПАНЕЛЬ (старая) ====================
 @dp.callback_query(lambda c: c.data == "admin_panel")
 async def admin_panel(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -629,7 +916,7 @@ async def process_edit_price(message: types.Message, state: FSMContext):
         
         for num in data[country]["numbers"]:
             if not num.get("used", False):
-                num["price"] = new_price
+                                num["price"] = new_price
         
         save_numbers(data)
         
@@ -740,6 +1027,8 @@ async def admin_stats(callback: types.CallbackQuery):
         return
     
     data = load_numbers()
+    pending_orders = load_pending_orders()
+    reviews_data = load_reviews()
     
     stats_text = "📊 Статистика:\n\n"
     
@@ -765,28 +1054,92 @@ async def admin_stats(callback: types.CallbackQuery):
         total_sold += sold
         total_value += sold * info['price']
     
+    # Добавляем статистику по новым функциям
     stats_text += f"📈 Итого:\n"
     stats_text += f"   • Всего номеров: {total_numbers} шт.\n"
     stats_text += f"   • Доступно: {total_available} шт.\n"
     stats_text += f"   • Продано: {total_sold} шт.\n"
     stats_text += f"   • Общая выручка: {total_value}₽\n"
-    stats_text += f"   • Страны: {len(data)}"
+    stats_text += f"   • Страны: {len(data)}\n\n"
+    
+    stats_text += f"🔄 Новые функции:\n"
+    stats_text += f"   • Ожидают выдачи: {len(pending_orders)} заказ(ов)\n"
+    stats_text += f"   • Отзывов получено: {len(reviews_data.get('reviews', []))}\n"
+    stats_text += f"   • Средний рейтинг: "
+    
+    # Считаем средний рейтинг
+    reviews = reviews_data.get("reviews", [])
+    if reviews:
+        avg_rating = sum(r.get("rating", 5) for r in reviews) / len(reviews)
+        stats_text += f"{avg_rating:.1f}/5 ⭐"
+    else:
+        stats_text += "нет данных"
     
     keyboard = InlineKeyboardBuilder()
-    keyboard.add(InlineKeyboardButton(
-        text="🔄 Обновить",
-        callback_data="admin_stats"
-    ))
-    keyboard.add(InlineKeyboardButton(
-        text="↩️ Назад",
-        callback_data="admin_panel"
-    ))
-    keyboard.adjust(2)
+    keyboard.add(InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_stats"))
+    keyboard.add(InlineKeyboardButton(text="📋 Ожидающие заказы", callback_data="show_pending_orders"))
+    keyboard.add(InlineKeyboardButton(text="⭐ Посмотреть отзывы", callback_data="reviews"))
+    keyboard.add(InlineKeyboardButton(text="↩️ Назад", callback_data="admin_panel"))
+    keyboard.adjust(2, 1, 1)
     
     await callback.message.edit_text(
         stats_text,
         reply_markup=keyboard.as_markup()
     )
+
+# Показать ожидающие заказы
+@dp.callback_query(lambda c: c.data == "show_pending_orders")
+async def show_pending_orders(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("❌ Доступ запрещен")
+        return
+    
+    pending_orders = load_pending_orders()
+    
+    if not pending_orders:
+        await callback.message.answer("✅ Нет ожидающих заказов.")
+        return
+    
+    text = "🔄 Заказы, ожидающие выдачи:\n\n"
+    
+    for order_id, order_info in list(pending_orders.items())[:10]:  # Показываем первые 10
+        user_info = f"@{order_info['username']}" if order_info['username'] else f"ID: {order_info['user_id']}"
+        date = datetime.fromisoformat(order_info['selected_at']).strftime("%H:%M")
+        
+        text += f"🆔 {order_id[:8]}...\n"
+        text += f"👤 {user_info}\n"
+        text += f"🌍 {order_info['country']}: {order_info['number']}\n"
+        text += f"💰 {order_info['price']}₽ | 🕒 {date}\n"
+        
+        # Кнопки для этого заказа
+        keyboard = InlineKeyboardBuilder()
+        keyboard.add(InlineKeyboardButton(
+            text=f"✅ Выдать {order_id[:8]}...",
+            callback_data=f"confirm_delivery_{order_id}"
+        ))
+        keyboard.add(InlineKeyboardButton(
+            text=f"❌ Отменить {order_id[:8]}...",
+            callback_data=f"cancel_delivery_{order_id}"
+        ))
+        keyboard.adjust(1)
+        
+        await callback.message.answer(text, reply_markup=keyboard.as_markup())
+        text = ""  # Сбрасываем текст для следующего сообщения
+    
+    keyboard_back = InlineKeyboardBuilder()
+    keyboard_back.add(InlineKeyboardButton(text="↩️ Назад в статистику", callback_data="admin_stats"))
+    keyboard_back.adjust(1)
+    
+    if len(pending_orders) > 10:
+        await callback.message.answer(
+            f"📋 ... и еще {len(pending_orders) - 10} заказов",
+            reply_markup=keyboard_back.as_markup()
+        )
+    else:
+        await callback.message.answer(
+            "📋 Конец списка",
+            reply_markup=keyboard_back.as_markup()
+        )
 
 # Назад в главное меню
 @dp.callback_query(lambda c: c.data == "back_to_main")
@@ -830,9 +1183,13 @@ async def confirm_reset(callback: types.CallbackQuery):
     
     save_numbers(clean_data)
     
+    # Очищаем ожидающие заказы
+    save_pending_orders({})
+    
     await callback.message.edit_text(
         "✅ База данных полностью очищена!\n"
-        "Все номера удалены.\n\n"
+        "Все номера удалены.\n"
+        "Ожидающие заказы очищены.\n\n"
         "Теперь можно добавлять новые номера через админ-панель."
     )
 
@@ -841,19 +1198,21 @@ async def main():
     # Инициализация данных
     init_data()
     
-    print("=" * 50)
-    print("🤖 БОТ ЗАПУЩЕН!")
-    print("=" * 50)
+    print("=" * 60)
+    print("🤖 БОТ ЗАПУЩЕН С НОВЫМИ ФУНКЦИЯМИ!")
+    print("=" * 60)
     print(f"👑 Админ ID: {ADMIN_ID}")
+    print(f"👤 Автор ID: {AUTHOR_ID}")
     print(f"💳 Карта: {CARD_NUMBER}")
-    print(f"👤 Держатель: {CARD_HOLDER}")
     print(f"📞 Поддержка: {SUPPORT_USERNAME}")
     print(f"👤 Автор для выдачи: {AUTHOR_USERNAME}")
-    print(f"📢 Канал отзывов: {CHANNEL_LINK}")
-    print(f"🤝 Создатель: {CREATOR_LINK}")
-    print("=" * 50)
+    print("=" * 60)
+    print("✨ ДОБАВЛЕННЫЕ ФУНКЦИИ:")
+    print("1. ✅ Подтверждение выдачи товара автором")
+    print("2. ✅ Система отзывов с рейтингом")
+    print("3. ✅ Улучшенные уведомления админу")
+    print("=" * 60)
     print("💵 Оплата: РУБЛЯМИ по карте")
-    print("✅ Система: Старая проверенная")
     print("📱 Статус: Бот запущен и готов к работе!")
     
     try:
@@ -863,4 +1222,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
