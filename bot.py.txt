@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 BOT_TOKEN = "8156674134:AAH2t8wCtxo95-_t3HQUFaOMBBHVPMWdQaU"  # Ваш токен бота
-ADMIN_ID = 951154134  # ID администратора (друга)
+ADMIN_ID = 1978558036  # ID администратора (друга)
 AUTHOR_ID = 951154134  # ID автора (может быть тот же, что и админ)
 
 # Контакты
@@ -1090,3 +1090,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
