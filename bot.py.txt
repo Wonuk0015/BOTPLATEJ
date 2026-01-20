@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 BOT_TOKEN = "8156674134:AAH2t8wCtxo95-_t3HQUFaOMBBHVPMWdQaU"  # Ваш токен бота
-ADMIN_ID = 1978558036 # ID администратора (друга)
+ADMIN_ID = 951154134  # ID администратора (друга)
 AUTHOR_ID = 951154134  # ID автора (может быть тот же, что и админ)
 
 # Контакты
@@ -47,65 +47,37 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# ==================== ФУНКЦИИ ДЛЯ СКРЫТИЯ НОМЕРОВ ====================
-def mask_phone_number(phone_number: str) -> str:
-    """Скрывает номер телефона, показывая только код страны"""
-    if not phone_number:
-        return "********"
-    
-    # Оставляем только код страны, остальное скрываем
-    parts = phone_number.split(' ')
-    if len(parts) > 1:
-        # Если номер с пробелами: +7 123 456 7890 → +7 *** *** ****
-        country_code = parts[0]
-        masked_parts = ['***' for _ in range(len(parts) - 1)]
-        return f"{country_code} {' '.join(masked_parts)}"
-    else:
-        # Если номер без пробелов: +71234567890 → +7*********
-        if len(phone_number) > 4:
-            return phone_number[:3] + "*" * (len(phone_number) - 3)
-        return "********"
-
-def generate_random_mask() -> str:
-    """Генерирует случайную маску для отображения"""
-    masks = [
-        "*** *** ****",
-        "*** **** ***",
-        "**** *** ***",
-        "***-***-****",
-        "****-***-***"
-    ]
-    return random.choice(masks)
-
-def format_phone_display(country: str, phone_number: str) -> str:
-    """Форматирует номер для отображения в боте"""
-    # Получаем код страны из номера
-    if phone_number.startswith('+'):
-        # Определяем код страны по префиксу
-        if phone_number.startswith('+880'):  # Бангладеш
-            return f"+880 {generate_random_mask()}"
-        elif phone_number.startswith('+84'):  # Вьетнам
-            return f"+84 {generate_random_mask()}"
-        elif phone_number.startswith('+91'):  # Индия
-            return f"+91 {generate_random_mask()}"
-        elif phone_number.startswith('+95'):  # Мьянма
-            return f"+95 {generate_random_mask()}"
-        elif phone_number.startswith('+7'):   # Россия/Казахстан
-            return f"+7 {generate_random_mask()}"
-        elif phone_number.startswith('+1'):   # США/Канада
-            return f"+1 {generate_random_mask()}"
-        else:
-            # Общий случай: оставляем код страны, остальное скрываем
-            code = phone_number[:4] if len(phone_number) >= 4 else phone_number
-            return f"{code} {generate_random_mask()}"
-    else:
-        return f"{country}: ********"
+# Коды стран для отображения
+COUNTRY_CODES = {
+    "Бангладеш": "+880",
+    "Вьетнам": "+84", 
+    "Индия": "+91",
+    "Мьянма": "+95",
+    "Россия": "+7",
+    "Казахстан": "+7",
+    "Украина": "+380",
+    "Беларусь": "+375",
+    "США": "+1",
+    "Канада": "+1",
+    "Германия": "+49",
+    "Франция": "+33",
+    "Италия": "+39",
+    "Испания": "+34",
+    "Великобритания": "+44",
+    "Польша": "+48",
+    "Турция": "+90",
+    "Китай": "+86",
+    "Япония": "+81",
+    "Южная Корея": "+82",
+    "Австралия": "+61",
+    "Бразилия": "+55",
+    "Мексика": "+52"
+}
 
 # ==================== СОСТОЯНИЯ FSM ====================
 class AdminStates(StatesGroup):
     adding_country = State()
-    adding_number = State()
-    adding_multiple_numbers = State()
+    adding_quantity = State()
     editing_price = State()
     waiting_review = State()
 
@@ -156,29 +128,38 @@ def save_pending_orders(data):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 def init_data():
-    """Инициализирует базу данных (ПУСТУЮ!)"""
+    """Инициализирует базу данных"""
     data = load_numbers()
     if not data:
         initial_data = {
-            "Бангладеш": {
-                "price": 120,
-                "numbers": []
-            },
-            "Вьетнам": {
-                "price": 115,
-                "numbers": []
-            },
-            "Индия": {
+            "Россия": {
                 "price": 100,
-                "numbers": []
+                "quantity": 0,
+                "code": "+7"
             },
-            "Мьянма": {
+            "Казахстан": {
+                "price": 120,
+                "quantity": 0,
+                "code": "+7"
+            },
+            "Украина": {
                 "price": 130,
-                "numbers": []
+                "quantity": 0,
+                "code": "+380"
+            },
+            "Беларусь": {
+                "price": 140,
+                "quantity": 0,
+                "code": "+375"
+            },
+            "США": {
+                "price": 200,
+                "quantity": 0,
+                "code": "+1"
             }
         }
         save_numbers(initial_data)
-        logger.info("✅ Создана новая база данных (пустая)")
+        logger.info("✅ Создана новая база данных")
     
     if not os.path.exists(REVIEWS_FILE):
         save_reviews({"reviews": []})
@@ -205,39 +186,32 @@ async def confirm_delivery(callback: types.CallbackQuery):
     
     order_info = pending_orders[order_id]
     country = order_info["country"]
-    number_id = order_info["number_id"]
-    actual_number = order_info["actual_number"]  # Реальный номер
     
-    # Удаляем номер из базы
+    # Уменьшаем количество доступных номеров
     data = load_numbers()
     
-    number_found = False
-    for i, num in enumerate(data[country]["numbers"]):
-        if num["id"] == number_id:
-            del data[country]["numbers"][i]
-            number_found = True
-            break
-    
-    if not number_found:
-        await callback.answer("❌ Номер не найден в базе")
+    if country in data and data[country]["quantity"] > 0:
+        data[country]["quantity"] -= 1
+        save_numbers(data)
+    else:
+        await callback.answer("❌ Нет доступных номеров в этой стране")
         return
-    
-    save_numbers(data)
     
     # Удаляем заказ из ожидающих
     del pending_orders[order_id]
     save_pending_orders(pending_orders)
     
-    # Уведомляем покупателя с РЕАЛЬНЫМ номером
+    # Уведомляем покупателя
     try:
         buyer_id = order_info["user_id"]
         await bot.send_message(
             buyer_id,
             f"✅ Автор подтвердил выдачу номера!\n\n"
             f"🌍 Страна: {country}\n"
-            f"📞 Номер: <code>{actual_number}</code>\n"
+            f"📞 Код страны: {data[country]['code']}\n"
             f"💰 Цена: {order_info['price']}₽\n\n"
-            f"Спасибо за покупку! 🛍️\n\n"
+            f"🎉 Автор свяжется с вами для передачи полного номера!\n\n"
+            f"💬 Свяжитесь с автором: {AUTHOR_USERNAME}\n\n"
             f"⭐ Не забудьте оставить отзыв!",
             parse_mode="HTML"
         )
@@ -246,10 +220,11 @@ async def confirm_delivery(callback: types.CallbackQuery):
     
     await callback.message.edit_text(
         f"✅ Выдача подтверждена!\n\n"
-        f"📞 Реальный номер отправлен покупателю.\n"
         f"🌍 Страна: {country}\n"
+        f"📞 Код: {data[country]['code']}\n"
         f"💰 Цена: {order_info['price']}₽\n"
-        f"👤 Покупатель уведомлен."
+        f"👤 Покупатель уведомлен.\n"
+        f"📞 Свяжитесь с покупателем для передачи номера."
     )
     
     logger.info(f"Автор подтвердил выдачу заказа {order_id}")
@@ -380,11 +355,13 @@ async def process_review_comment(message: types.Message, state: FSMContext):
     
     await state.clear()
 
-# ==================== ФУНКЦИЯ 3: Улучшенные уведомления админу ====================
-async def notify_admin_about_selection(user_id: int, username: str, country: str, number_id: int, display_number: str, actual_number: str, price: int):
+# ==================== ФУНКЦИЯ 3: Уведомления админу ====================
+async def notify_admin_about_selection(user_id: int, username: str, country: str, price: int):
     """Отправляет админу уведомление о выборе номера"""
     try:
         user_info = f"@{username}" if username else f"ID: {user_id}"
+        data = load_numbers()
+        country_code = data[country]["code"] if country in data else COUNTRY_CODES.get(country, "")
         
         # Сохраняем информацию о заказе
         order_id = f"{user_id}_{int(datetime.now().timestamp())}"
@@ -394,9 +371,7 @@ async def notify_admin_about_selection(user_id: int, username: str, country: str
             "user_id": user_id,
             "username": username,
             "country": country,
-            "number_id": number_id,
-            "display_number": display_number,  # Скрытый номер для показа
-            "actual_number": actual_number,    # Реальный номер для выдачи
+            "code": country_code,
             "price": price,
             "selected_at": datetime.now().isoformat()
         }
@@ -415,14 +390,12 @@ async def notify_admin_about_selection(user_id: int, username: str, country: str
         keyboard.adjust(1)
         
         message_text = (
-            f"_ЮЗ_ осмотрел этот номер и думает купить его\n"
-            f"ждите сообщение в личке!\n\n"
+            f"🎯 НОВЫЙ ЗАКАЗ!\n\n"
             f"👤 Покупатель: {user_info}\n"
             f"🌍 Страна: {country}\n"
-            f"📞 Номер (отображение): {display_number}\n"
-            f"📞 Номер (реальный): {actual_number}\n"
+            f"📞 Код: {country_code}\n"
             f"💰 Цена: {price}₽\n"
-            f"🆔 ID номера: {number_id}\n"
+            f"🆔 ID заказа: {order_id[:8]}\n"
             f"🕒 Время: {datetime.now().strftime('%H:%M:%S')}"
         )
         
@@ -455,8 +428,8 @@ async def cmd_start(message: types.Message):
     
     await message.answer(
         "👋 Добро пожаловать в бот по продаже физ номеров!\n\n"
-        "📱 Номера скрыты для безопасности.\n"
-        "🔒 После оплаты вы получите полный номер.\n\n"
+        "📱 Номера выдаются автором вручную.\n"
+        "🔒 Выбирайте страну → Оплачивайте → Получайте номер от автора!\n\n"
         "🛒 Выберите действие:",
         reply_markup=keyboard.as_markup()
     )
@@ -472,10 +445,9 @@ async def show_countries(callback: types.CallbackQuery):
     keyboard = InlineKeyboardBuilder()
     
     for country, info in data.items():
-        available_count = sum(1 for num in info["numbers"] if not num.get("used", False))
-        if available_count > 0:
+        if info["quantity"] > 0:
             keyboard.add(InlineKeyboardButton(
-                text=f"📍 {country} ({available_count} шт.) - {info['price']}₽",
+                text=f"📍 {country} ({info['quantity']} шт.) - {info['price']}₽",
                 callback_data=f"country_{country}"
             ))
     
@@ -485,13 +457,13 @@ async def show_countries(callback: types.CallbackQuery):
     
     await callback.message.edit_text(
         "🌍 Выберите страну для покупки номера:\n"
-        "📱 Номера скрыты для безопасности\n"
+        "📱 Номера выдаются автором вручную после оплаты\n"
         "(в скобках указано количество доступных номеров)",
         reply_markup=keyboard.as_markup()
     )
 
 @dp.callback_query(lambda c: c.data.startswith("country_"))
-async def show_numbers_by_country(callback: types.CallbackQuery):
+async def select_country_for_purchase(callback: types.CallbackQuery):
     country = callback.data.split("_")[1]
     data = load_numbers()
     
@@ -500,104 +472,80 @@ async def show_numbers_by_country(callback: types.CallbackQuery):
         return
     
     country_info = data[country]
-    available_numbers = [num for num in country_info["numbers"] if not num.get("used", False)]
     
-    if not available_numbers:
+    if country_info["quantity"] <= 0:
         await callback.answer("❌ Нет доступных номеров")
         return
-    
-    keyboard = InlineKeyboardBuilder()
-    
-    for number in available_numbers:
-        # Отображаем скрытый номер
-        display_number = format_phone_display(country, number["number"])
-        button_text = f"📞 {display_number} - {number['price']}₽"
-        
-        # Для админа показываем реальный номер в callback_data
-        if callback.from_user.id == ADMIN_ID:
-            button_text = f"📞 {number['number']} - {number['price']}₽"
-        
-        keyboard.add(InlineKeyboardButton(
-            text=button_text,
-            callback_data=f"select_number_{country}_{number['id']}"
-        ))
-    
-    keyboard.add(InlineKeyboardButton(text="↩️ Назад к странам", callback_data="buy_number"))
-    keyboard.adjust(1)
-    
-    await callback.message.edit_text(
-        f"📱 Доступные номера ({country}):\n\n"
-        f"💳 Цена: {country_info['price']}₽ за номер\n"
-        f"📊 Доступно: {len(available_numbers)} шт.\n"
-        f"🔒 Номера скрыты для безопасности\n\n"
-        "Выберите номер для покупки:",
-        reply_markup=keyboard.as_markup()
-    )
-
-@dp.callback_query(lambda c: c.data.startswith("select_number_"))
-async def select_number(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    country = parts[2]
-    number_id = int(parts[3])
-    
-    data = load_numbers()
-    
-    # Найти номер
-    number_info = None
-    for num in data[country]["numbers"]:
-        if num["id"] == number_id and not num.get("used", False):
-            number_info = num
-            break
-    
-    if not number_info:
-        await callback.answer("❌ Номер уже продан")
-        return
-    
-    # Скрытый номер для показа покупателю
-    display_number = format_phone_display(country, number_info["number"])
     
     payment_text = (
         f"✅ Вы выбрали:\n\n"
         f"🌍 Страна: {country}\n"
-        f"📞 Номер: {display_number}\n"
-        f"💰 Стоимость: {number_info['price']}₽\n\n"
+        f"📞 Код страны: {country_info['code']}\n"
+        f"💰 Стоимость: {country_info['price']}₽\n"
+        f"📊 Доступно: {country_info['quantity']} шт.\n\n"
         f"💳 Оплата по карте:\n\n"
-        f"1. Переведите {number_info['price']}₽ на карту:\n"
+        f"1. Переведите {country_info['price']}₽ на карту:\n"
         f"   💳 {CARD_NUMBER}\n"
         f"   👤 {CARD_HOLDER}\n\n"
         f"2. После оплаты отправьте скриншот чека:\n"
         f"   📨 {AUTHOR_USERNAME}\n\n"
         f"3. Автор проверит платеж и отправит ПОЛНЫЙ номер\n\n"
         f"⚠️ Обязательно укажите в комментарии:\n"
-        f"   Покупка {country} №{number_id}\n\n"
-        f"🔒 Номер скрыт для безопасности. Полный номер вы получите после оплаты."
+        f"   Покупка {country} номера\n\n"
+        f"🔒 Номер выдается автором вручную после проверки оплаты."
     )
     
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(
-        text="📨 Написать автору с чеком", 
-        url=f"https://t.me/{AUTHOR_USERNAME[1:]}"
+        text="✅ Подтвердить покупку", 
+        callback_data=f"confirm_purchase_{country}"
     ))
     keyboard.add(InlineKeyboardButton(
-        text="↩️ Назад к номерам", 
-        callback_data=f"country_{country}"
+        text="↩️ Назад к странам", 
+        callback_data="buy_number"
     ))
     keyboard.adjust(1)
-    
-    # Уведомляем админа о выборе номера
-    await notify_admin_about_selection(
-        user_id=callback.from_user.id,
-        username=callback.from_user.username,
-        country=country,
-        number_id=number_id,
-        display_number=display_number,
-        actual_number=number_info['number'],  # Реальный номер
-        price=number_info['price']
-    )
     
     await callback.message.edit_text(
         payment_text,
         reply_markup=keyboard.as_markup()
+    )
+
+@dp.callback_query(lambda c: c.data.startswith("confirm_purchase_"))
+async def confirm_purchase(callback: types.CallbackQuery):
+    country = callback.data.split("_")[2]
+    data = load_numbers()
+    
+    if country not in data:
+        await callback.answer("❌ Страна не найдена")
+        return
+    
+    country_info = data[country]
+    
+    if country_info["quantity"] <= 0:
+        await callback.answer("❌ Нет доступных номеров")
+        return
+    
+    # Уведомляем админа о выборе
+    await notify_admin_about_selection(
+        user_id=callback.from_user.id,
+        username=callback.from_user.username,
+        country=country,
+        price=country_info['price']
+    )
+    
+    await callback.message.edit_text(
+        f"🎉 Заказ оформлен!\n\n"
+        f"🌍 Страна: {country}\n"
+        f"📞 Код: {country_info['code']}\n"
+        f"💰 Цена: {country_info['price']}₽\n\n"
+        f"📋 Инструкция:\n"
+        f"1. Оплатите {country_info['price']}₽ на карту {CARD_NUMBER}\n"
+        f"2. Отправьте скриншот чека автору: {AUTHOR_USERNAME}\n"
+        f"3. Автор проверит и отправит вам полный номер\n\n"
+        f"⏳ Обычно выдача происходит в течение 5-15 минут\n\n"
+        f"💬 Контакт автора: {AUTHOR_USERNAME}\n"
+        f"📞 Поддержка: {SUPPORT_USERNAME}"
     )
 
 # Информация
@@ -613,9 +561,9 @@ async def show_info(callback: types.CallbackQuery):
         "• Доставка: 5-15 минут после оплаты\n"
         f"• рег: год назад\n\n"
         "🔒 Безопасность:\n"
-        "• Номера скрыты от публичного просмотра\n"
+        "• Номера выдаются автором вручную\n"
         "• Полный номер только после оплаты\n"
-        "• Защита от скамеров и копирования\n\n"
+        "• Защита от скамеров\n\n"
         "💳 Оплата:\n"
         f"• Переводом на карту {CARD_NUMBER}\n"
         f"• Проверка автором: {AUTHOR_USERNAME}\n"
@@ -667,12 +615,10 @@ async def admin_panel(callback: types.CallbackQuery):
     
     keyboard = InlineKeyboardBuilder()
     
-    keyboard.add(InlineKeyboardButton(text="➕ Добавить номер", callback_data="admin_add_number_menu"))
-    keyboard.add(InlineKeyboardButton(text="📝 Добавить несколько номеров", callback_data="admin_add_multiple"))
+    keyboard.add(InlineKeyboardButton(text="➕ Добавить номера", callback_data="admin_add_numbers"))
     keyboard.add(InlineKeyboardButton(text="💰 Изменить цену", callback_data="admin_edit_price_menu"))
     keyboard.add(InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"))
-    keyboard.add(InlineKeyboardButton(text="🗑️ Удалить ВСЕ номера", callback_data="admin_clear_all"))
-    keyboard.add(InlineKeyboardButton(text="👁️ Показать все номера", callback_data="admin_show_all"))
+    keyboard.add(InlineKeyboardButton(text="👁️ Показать все страны", callback_data="admin_show_all"))
     
     keyboard.add(InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_main"))
     
@@ -684,7 +630,7 @@ async def admin_panel(callback: types.CallbackQuery):
         reply_markup=keyboard.as_markup()
     )
 
-# Показать все номера админу
+# Показать все страны админу
 @dp.callback_query(lambda c: c.data == "admin_show_all")
 async def admin_show_all(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -697,20 +643,13 @@ async def admin_show_all(callback: types.CallbackQuery):
         await callback.message.answer("📭 База номеров пуста.")
         return
     
-    text = "📋 Все номера в базе (только для админа):\n\n"
+    text = "📋 Все страны и номера (только для админа):\n\n"
     
     for country, info in data.items():
-        text += f"🌍 {country} ({info['price']}₽):\n"
-        
-        if not info["numbers"]:
-            text += "   📭 Нет номеров\n\n"
-            continue
-        
-        for num in info["numbers"]:
-            status = "✅ Доступен" if not num.get("used", False) else "❌ Продан"
-            text += f"   📞 {num['number']} | {num['price']}₽ | ID: {num['id']} | {status}\n"
-        
-        text += "\n"
+        text += f"🌍 {country}\n"
+        text += f"   📞 Код: {info['code']}\n"
+        text += f"   💰 Цена: {info['price']}₽\n"
+        text += f"   📊 Доступно: {info['quantity']} шт.\n\n"
     
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(text="↩️ Назад", callback_data="admin_panel"))
@@ -718,52 +657,9 @@ async def admin_show_all(callback: types.CallbackQuery):
     
     await callback.message.edit_text(text[:4000], reply_markup=keyboard.as_markup())
 
-# Очистить все номера
-@dp.callback_query(lambda c: c.data == "admin_clear_all")
-async def admin_clear_all(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("❌ Доступ запрещен")
-        return
-    
-    keyboard = InlineKeyboardBuilder()
-    keyboard.add(InlineKeyboardButton(text="✅ Да, удалить все номера", callback_data="confirm_clear_all"))
-    keyboard.add(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel"))
-    keyboard.adjust(2)
-    
-    await callback.message.edit_text(
-        "⚠️ ВНИМАНИЕ!\n\n"
-        "Вы собираетесь удалить ВСЕ номера из всех стран.\n"
-        "Будут удалены только доступные (непроданные) номера.\n"
-        "Проданные номера останутся в статистике.\n\n"
-        "Продолжить?",
-        reply_markup=keyboard.as_markup()
-    )
-
-@dp.callback_query(lambda c: c.data == "confirm_clear_all")
-async def confirm_clear_all(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("❌ Доступ запрещен")
-        return
-    
-    data = load_numbers()
-    
-    cleared_count = 0
-    for country in data:
-        sold_numbers = [num for num in data[country]["numbers"] if num.get("used", False)]
-        cleared_count += len(data[country]["numbers"]) - len(sold_numbers)
-        data[country]["numbers"] = sold_numbers
-    
-    save_numbers(data)
-    
-    await callback.message.edit_text(
-        f"✅ Удалено {cleared_count} номеров!\n\n"
-        "Все доступные номера удалены.\n"
-        "Проданные номера сохранены для статистики."
-    )
-
-# Меню добавления номера
-@dp.callback_query(lambda c: c.data == "admin_add_number_menu")
-async def admin_add_number_menu(callback: types.CallbackQuery):
+# Добавление номеров (только количество)
+@dp.callback_query(lambda c: c.data == "admin_add_numbers")
+async def admin_add_numbers_menu(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("❌ Доступ запрещен")
         return
@@ -775,8 +671,8 @@ async def admin_add_number_menu(callback: types.CallbackQuery):
     
     for country in countries:
         keyboard.add(InlineKeyboardButton(
-            text=country,
-            callback_data=f"admin_add_to_{country}"
+            text=f"{country} ({data[country]['quantity']} шт.)",
+            callback_data=f"admin_add_qty_{country}"
         ))
     
     keyboard.add(InlineKeyboardButton(text="➕ Новая страна", callback_data="admin_new_country"))
@@ -785,136 +681,31 @@ async def admin_add_number_menu(callback: types.CallbackQuery):
     keyboard.adjust(1)
     
     await callback.message.edit_text(
-        "🌍 Выберите страну для добавления номера:",
-        reply_markup=keyboard.as_markup()
-    )
-
-# Добавление номера в выбранную страну
-@dp.callback_query(lambda c: c.data.startswith("admin_add_to_"))
-async def admin_add_to_country(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("❌ Доступ запрещен")
-        return
-    
-    country = callback.data.split("_")[3]
-    
-    await state.set_state(AdminStates.adding_number)
-    await state.update_data(country=country)
-    
-    await callback.message.edit_text(
-        f"📝 Введите РЕАЛЬНЫЙ номер для страны {country} в формате:\n"
-        f"+1234567890\n\n"
-        f"💡 Для покупателей номер будет показан как: {format_phone_display(country, '+1234567890')}\n"
-        f"💰 Цена будет установлена автоматически ({load_numbers()[country]['price']}₽)"
-    )
-
-@dp.message(AdminStates.adding_number)
-async def process_add_number(message: types.Message, state: FSMContext):
-    user_data = await state.get_data()
-    country = user_data.get('country')
-    
-    if not country:
-        await message.answer("❌ Ошибка: страна не определена")
-        await state.clear()
-        return
-    
-    phone_number = message.text.strip()
-    
-    # Проверка формата
-    if not (phone_number.startswith('+') and phone_number[1:].replace(' ', '').isdigit() and
-                phone_number[1:].replace(' ', '').isdigit() and len(phone_number) > 5):
-        await message.answer("❌ Неверный формат номера. Используйте +1234567890")
-        return
-    
-    data = load_numbers()
-    
-    # Проверяем дубликаты
-    for num in data[country]["numbers"]:
-        if num["number"] == phone_number:
-            await message.answer(f"❌ Номер {phone_number} уже есть в базе")
-            return
-    
-    # Генерация ID
-    if data[country]["numbers"]:
-        new_id = max(num['id'] for num in data[country]["numbers"]) + 1
-    else:
-        new_id = 1
-    
-    # Добавляем номер
-    data[country]["numbers"].append({
-        "id": new_id,
-        "number": phone_number,
-        "price": data[country]["price"],
-        "used": False
-    })
-    
-    save_numbers(data)
-    
-    # Показываем как номер будет отображаться покупателям
-    display_number = format_phone_display(country, phone_number)
-    
-    await message.answer(
-        f"✅ Номер добавлен!\n\n"
-        f"🌍 Страна: {country}\n"
-        f"📞 Реальный номер: {phone_number}\n"
-        f"👁️ Для покупателей: {display_number}\n"
-        f"💰 Цена: {data[country]['price']}₽\n"
-        f"🆔 ID: {new_id}"
-    )
-    
-    await state.clear()
-
-# Добавление нескольких номеров
-@dp.callback_query(lambda c: c.data == "admin_add_multiple")
-async def admin_add_multiple_start(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("❌ Доступ запрещен")
-        return
-    
-    data = load_numbers()
-    countries = list(data.keys())
-    
-    keyboard = InlineKeyboardBuilder()
-    
-    for country in countries:
-        keyboard.add(InlineKeyboardButton(
-            text=country,
-            callback_data=f"admin_multi_to_{country}"
-        ))
-    
-    keyboard.add(InlineKeyboardButton(
-        text="↩️ Назад",
-        callback_data="admin_panel"
-    ))
-    
-    keyboard.adjust(1)
-    
-    await callback.message.edit_text(
         "🌍 Выберите страну для добавления номеров:\n\n"
-        "💡 Номера будут скрыты для покупателей",
+        "💡 Вы будете указывать только КОЛИЧЕСТВО номеров.\n"
+        "Реальные номера известны только автору и выдаются вручную.",
         reply_markup=keyboard.as_markup()
     )
 
-@dp.callback_query(lambda c: c.data.startswith("admin_multi_to_"))
-async def admin_multi_to_country(callback: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(lambda c: c.data.startswith("admin_add_qty_"))
+async def admin_add_qty_to_country(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("❌ Доступ запрещен")
+        return
+    
     country = callback.data.split("_")[3]
     
-    await state.set_state(AdminStates.adding_multiple_numbers)
+    await state.set_state(AdminStates.adding_quantity)
     await state.update_data(country=country)
     
     await callback.message.edit_text(
-        f"📝 Введите РЕАЛЬНЫЕ номера для страны {country} по одному на строку:\n"
-        f"Формат: +1234567890\n\n"
-        f"Пример:\n"
-        f"+8801112233\n"
-        f"+8802223344\n"
-        f"+8803334455\n\n"
-        f"💡 Для покупателей номера будут показаны как: {format_phone_display(country, '+8800000000')}"
+        f"📝 Введите КОЛИЧЕСТВО номеров для страны {country}:\n\n"
+        f"💡 Просто число. Например: 10\n\n"
+        f"📊 Текущее количество: {load_numbers()[country]['quantity']} шт."
     )
 
-# Обработка ввода нескольких номеров
-@dp.message(AdminStates.adding_multiple_numbers)
-async def process_multiple_numbers(message: types.Message, state: FSMContext):
+@dp.message(AdminStates.adding_quantity)
+async def process_add_quantity(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     country = user_data.get('country')
     
@@ -923,76 +714,36 @@ async def process_multiple_numbers(message: types.Message, state: FSMContext):
         await state.clear()
         return
     
-    phone_numbers = message.text.strip().split('\n')
-    valid_numbers = []
-    invalid_numbers = []
-    
-    for phone_number in phone_numbers:
-        phone_number = phone_number.strip()
-        if phone_number.startswith('+') and phone_number[1:].replace(' ', '').isdigit() and len(phone_number) > 5:
-            valid_numbers.append(phone_number)
-        else:
-            invalid_numbers.append(phone_number)
-    
-    if not valid_numbers:
-        await message.answer("❌ Не найдено ни одного валидного номера")
+    try:
+        quantity = int(message.text.strip())
+        
+        if quantity <= 0:
+            await message.answer("❌ Количество должно быть больше 0")
+            return
+        
+        data = load_numbers()
+        
+        if country not in data:
+            await message.answer("❌ Страна не найдена")
+            return
+        
+        # Увеличиваем количество
+        data[country]["quantity"] += quantity
+        
+        save_numbers(data)
+        
+        await message.answer(
+            f"✅ Добавлено {quantity} номеров в страну {country}!\n\n"
+            f"📞 Код страны: {data[country]['code']}\n"
+            f"💰 Цена: {data[country]['price']}₽\n"
+            f"📊 Теперь доступно: {data[country]['quantity']} шт.\n\n"
+            f"💡 Реальные номера будут выдаваться автором вручную."
+        )
+        
+    except ValueError:
+        await message.answer("❌ Введите целое число (например: 5)")
         return
     
-    data = load_numbers()
-    
-    # Проверяем дубликаты
-    existing_numbers = [num["number"] for num in data[country]["numbers"]]
-    duplicates = []
-    unique_numbers = []
-    
-    for phone_number in valid_numbers:
-        if phone_number in existing_numbers:
-            duplicates.append(phone_number)
-        else:
-            unique_numbers.append(phone_number)
-    
-    # Генерация ID
-    if data[country]["numbers"]:
-        current_id = max(num['id'] for num in data[country]["numbers"])
-    else:
-        current_id = 0
-    
-    added_count = 0
-    for phone_number in unique_numbers:
-        current_id += 1
-        data[country]["numbers"].append({
-            "id": current_id,
-            "number": phone_number,
-            "price": data[country]["price"],
-            "used": False
-        })
-        added_count += 1
-    
-    save_numbers(data)
-    
-    response = f"✅ Добавлено {added_count} номеров в страну {country}\n\n"
-    
-    # Пример как будет выглядеть для покупателей
-    if unique_numbers:
-        sample_display = format_phone_display(country, unique_numbers[0])
-        response += f"💡 Для покупателей номера будут показаны как: {sample_display}\n\n"
-    
-    if duplicates:
-        response += f"⚠️ Пропущено (дубликаты): {len(duplicates)} номеров\n"
-        for dup in duplicates[:3]:
-            response += f"   {dup}\n"
-        if len(duplicates) > 3:
-            response += f"   ... и еще {len(duplicates) - 3}\n"
-        response += "\n"
-    
-    if invalid_numbers:
-        response += f"❌ Не добавлено (неверный формат): {len(invalid_numbers)} номеров\n"
-        for invalid in invalid_numbers[:3]:
-            response += f"   {invalid}\n"
-        if len(invalid_numbers) > 3:
-            response += f"   ... и еще {len(invalid_numbers) - 3}\n"
-    
-    await message.answer(response)
     await state.clear()
 
 # Меню изменения цены
@@ -1060,11 +811,6 @@ async def process_edit_price(message: types.Message, state: FSMContext):
             return
         
         data[country]["price"] = new_price
-        
-        for num in data[country]["numbers"]:
-            if not num.get("used", False):
-                num["price"] = new_price
-        
         save_numbers(data)
         
         await message.answer(f"✅ Цена для {country} изменена на {new_price}₽")
@@ -1085,18 +831,26 @@ async def admin_new_country(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.adding_country)
     
     await callback.message.edit_text(
-        "🌍 Введите название новой страны и цену через запятую:\n"
-        "Пример: Бразилия,150\n\n"
-        "💡 Для покупателей номера будут скрыты"
+        "🌍 Введите название новой страны, код и цену через запятую:\n"
+        "Пример: Турция,+90,150\n\n"
+        "💡 Формат: Название,Код,Цена\n"
+        "Примеры:\n"
+        "• Германия,+49,180\n"
+        "• Франция,+33,170\n"
+        "• США,+1,200"
     )
 
 # Обработка ввода новой страны
 @dp.message(AdminStates.adding_country)
 async def process_new_country(message: types.Message, state: FSMContext):
     try:
-        country, price = message.text.split(',')
-        country = country.strip()
-        price = int(price.strip())
+        parts = [p.strip() for p in message.text.split(',')]
+        if len(parts) != 3:
+            raise ValueError
+        
+        country = parts[0]
+        code = parts[1]
+        price = int(parts[2])
         
         data = load_numbers()
         
@@ -1105,21 +859,25 @@ async def process_new_country(message: types.Message, state: FSMContext):
             return
         
         data[country] = {
-            "price": price,
-            "numbers": []
+                        "price": price,
+            "quantity": 0,
+            "code": code
         }
         
         save_numbers(data)
         
         await message.answer(
-            f"✅ Страна {country} создана с ценой {price}₽\n\n"
-            f"💡 Для покупателей номера будут показаны как: {format_phone_display(country, '+1234567890')}\n\n"
-            f"Теперь можно добавлять номера в эту страну через админ-панель."
+            f"✅ Страна {country} создана!\n\n"
+            f"📞 Код: {code}\n"
+            f"💰 Цена: {price}₽\n"
+            f"📊 Количество: 0 шт.\n\n"
+            f"💡 Теперь можно добавить номера через админ-панель.\n"
+            f"📱 Пользователи увидят: {country} ({code})"
         )
         await state.clear()
         
     except ValueError:
-        await message.answer("❌ Неверный формат. Используйте: Страна,цена")
+        await message.answer("❌ Неверный формат. Используйте: Страна,Код,цена\nПример: Турция,+90,150")
 
 # Статистика
 @dp.callback_query(lambda c: c.data == "admin_stats")
@@ -1134,39 +892,30 @@ async def admin_stats(callback: types.CallbackQuery):
     
     stats_text = "📊 Статистика:\n\n"
     
-    total_numbers = 0
     total_available = 0
-    total_sold = 0
     total_value = 0
     
     for country, info in data.items():
-        numbers = info["numbers"]
-        available = sum(1 for num in numbers if not num.get("used", False))
-        sold = len(numbers) - available
+        available = info["quantity"]
+        total_available += available
         
         stats_text += f"🌍 {country}:\n"
-        stats_text += f"   • Цена: {info['price']}₽\n"
-        stats_text += f"   • Всего: {len(numbers)} шт.\n"
-        stats_text += f"   • Доступно: {available} шт.\n"
-        stats_text += f"   • Продано: {sold} шт.\n"
-        stats_text += f"   • Выручка: {sold * info['price']}₽\n\n"
+        stats_text += f"   📞 Код: {info['code']}\n"
+        stats_text += f"   💰 Цена: {info['price']}₽\n"
+        stats_text += f"   📊 Доступно: {available} шт.\n"
+        stats_text += f"   💵 Потенциальная выручка: {available * info['price']}₽\n\n"
         
-        total_numbers += len(numbers)
-        total_available += available
-        total_sold += sold
-        total_value += sold * info['price']
+        total_value += available * info['price']
     
     stats_text += f"📈 Итого:\n"
-    stats_text += f"   • Всего номеров: {total_numbers} шт.\n"
-    stats_text += f"   • Доступно: {total_available} шт.\n"
-    stats_text += f"   • Продано: {total_sold} шт.\n"
-    stats_text += f"   • Общая выручка: {total_value}₽\n"
-    stats_text += f"   • Страны: {len(data)}\n\n"
+    stats_text += f"   🌍 Стран: {len(data)}\n"
+    stats_text += f"   📱 Всего номеров: {total_available} шт.\n"
+    stats_text += f"   💰 Общая стоимость: {total_value}₽\n\n"
     
     stats_text += f"🔄 Новые функции:\n"
     stats_text += f"   • Ожидают выдачи: {len(pending_orders)} заказ(ов)\n"
     stats_text += f"   • Отзывов получено: {len(reviews_data.get('reviews', []))}\n"
-    stats_text += f"   • 🔒 Номера скрыты для покупателей\n"
+    stats_text += f"   • 📱 Номера выдаются автором вручную\n"
     
     reviews = reviews_data.get("reviews", [])
     if reviews:
@@ -1177,7 +926,7 @@ async def admin_stats(callback: types.CallbackQuery):
     keyboard.add(InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_stats"))
     keyboard.add(InlineKeyboardButton(text="📋 Ожидающие заказы", callback_data="show_pending_orders"))
     keyboard.add(InlineKeyboardButton(text="⭐ Посмотреть отзывы", callback_data="reviews"))
-    keyboard.add(InlineKeyboardButton(text="👁️ Показать все номера", callback_data="admin_show_all"))
+    keyboard.add(InlineKeyboardButton(text="👁️ Показать все страны", callback_data="admin_show_all"))
     keyboard.add(InlineKeyboardButton(text="↩️ Назад", callback_data="admin_panel"))
     keyboard.adjust(2, 1, 1, 1)
     
@@ -1208,8 +957,7 @@ async def show_pending_orders(callback: types.CallbackQuery):
         text += f"🆔 {order_id[:8]}...\n"
         text += f"👤 {user_info}\n"
         text += f"🌍 {order_info['country']}\n"
-        text += f"📞 (покупателю): {order_info['display_number']}\n"
-        text += f"📞 (реальный): {order_info['actual_number']}\n"
+        text += f"📞 Код: {order_info['code']}\n"
         text += f"💰 {order_info['price']}₽ | 🕒 {date}\n\n"
         
         keyboard = InlineKeyboardBuilder()
@@ -1274,17 +1022,38 @@ async def confirm_reset(callback: types.CallbackQuery):
         return
     
     clean_data = {
-        "Бангладеш": {"price": 120, "numbers": []},
-        "Вьетнам": {"price": 115, "numbers": []},
-        "Индия": {"price": 100, "numbers": []},
-        "Мьянма": {"price": 130, "numbers": []}
+        "Россия": {
+            "price": 100,
+            "quantity": 0,
+            "code": "+7"
+        },
+        "Казахстан": {
+            "price": 120,
+            "quantity": 0,
+            "code": "+7"
+        },
+        "Украина": {
+            "price": 130,
+            "quantity": 0,
+            "code": "+380"
+        },
+        "Беларусь": {
+            "price": 140,
+            "quantity": 0,
+            "code": "+375"
+        },
+        "США": {
+            "price": 200,
+            "quantity": 0,
+            "code": "+1"
+        }
     }
     
     save_numbers(clean_data)
     save_pending_orders({})
     
     await callback.message.edit_text(
-        "✅ База данных полностью очищена!\n"
+        "✅ База данных полностью сброшена!\n"
         "Все номера удалены.\n"
         "Ожидающие заказы очищены.\n\n"
         "Теперь можно добавлять новые номера через админ-панель."
@@ -1296,19 +1065,20 @@ async def main():
     init_data()
     
     print("=" * 60)
-    print("🤖 БОТ ЗАПУЩЕН С СКРЫТЫМИ НОМЕРАМИ!")
+    print("🤖 БОТ ЗАПУЩЕН!")
     print("=" * 60)
     print(f"👑 Админ ID: {ADMIN_ID}")
     print(f"👤 Автор ID: {AUTHOR_ID}")
     print(f"💳 Карта: {CARD_NUMBER[:8]}****")
     print(f"📞 Поддержка: {SUPPORT_USERNAME}")
+    print(f"👨‍💻 Автор: {AUTHOR_USERNAME}")
     print("=" * 60)
-    print("✨ ОСОБЕННОСТИ:")
-    print("1. 🔒 Номера скрыты от публичного просмотра")
-    print("2. ✅ Покупатели видят только код страны")
-    print("3. 📱 Реальный номер только после оплаты")
-    print("4. ⭐ Система отзывов с рейтингом")
-    print("5. 🔔 Уведомления админу с кнопками")
+    print("✨ ОСОБЕННОСТИ СИСТЕМЫ:")
+    print("1. 📱 Номера выдаются автором ВРУЧНУЮ")
+    print("2. 🌍 Пользователи видят только страну и код")
+    print("3. 📊 Админ добавляет только КОЛИЧЕСТВО номеров")
+    print("4. 💰 Оплата → Чек автору → Получение номера")
+    print("5. ⭐ Система отзывов с рейтингом")
     print("=" * 60)
     print("💵 Оплата: РУБЛЯМИ по карте")
     print("📱 Статус: Бот запущен и готов к работе!")
@@ -1320,7 +1090,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
-
