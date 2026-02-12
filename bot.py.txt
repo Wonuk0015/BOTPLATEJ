@@ -25,7 +25,7 @@ AUTHOR_ID = 951154134  # ID автора (может быть тот же, чт�
 # Контакты
 SUPPORT_USERNAME = "@svetonaya"
 AUTHOR_USERNAME = "@svetonaya"  # Автор для выдачи номеров
-CHANNEL_LINK = "https://t.me/shopsfiznumber"
+CHANNEL_LINK = "https://t.me/fiztonaya"
 CREATOR_LINK = "@UGLYLELOOSH"
 
 # Реквизиты карты (ЗАМЕНИТЕ НА СВОИ!)
@@ -1090,6 +1090,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
