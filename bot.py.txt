@@ -29,8 +29,8 @@ CHANNEL_LINK = "https://t.me/fiztonaya"
 CREATOR_LINK = "@UGLYLELOOSH"
 
 # Реквизиты карты (ЗАМЕНИТЕ НА СВОИ!)
-CARD_NUMBER = "2200 1234 5678 9012"  # Номер карты
-CARD_HOLDER = "ИВАН ИВАНОВ"           # Имя держателя
+CARD_NUMBER = "2202 2080 2594 5990"  # Номер карты
+CARD_HOLDER = "Андрей В."           # Имя держателя
 
 # Файлы для данных
 DATA_FILE = "numbers.json"
@@ -1090,6 +1090,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
